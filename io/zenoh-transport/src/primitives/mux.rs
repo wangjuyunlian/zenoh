@@ -1,3 +1,5 @@
+use zenoh_protocol::proto::SharedSubscriber;
+
 //
 // Copyright (c) 2022 ZettaScale Technology
 //
@@ -60,10 +62,18 @@ impl Primitives for Mux {
         sub_info: &SubInfo,
         routing_context: Option<RoutingContext>,
     ) {
-        let d = Declaration::Subscriber(Subscriber {
-            key: key_expr.to_owned(),
-            info: sub_info.clone(),
-        });
+        // Third Party Modifications
+        let d = match sub_info.shared {
+            true => Declaration::SharedSubscriber(SharedSubscriber {
+                key: key_expr.to_owned(),
+                info: sub_info.clone(),
+            }),
+            false => Declaration::Subscriber(Subscriber {
+                key: key_expr.to_owned(),
+                info: sub_info.clone(),
+            }),
+        };
+
         let decls = vec![d];
         let _ =
             self.handler
@@ -134,6 +144,7 @@ impl Primitives for Mux {
                 .handle_message(ZenohMessage::make_declare(decls, routing_context, None));
     }
 
+    // Third Party Modifications
     fn send_data(
         &self,
         key_expr: &KeyExpr,
@@ -142,7 +153,8 @@ impl Primitives for Mux {
         cogestion_control: CongestionControl,
         data_info: Option<DataInfo>,
         routing_context: Option<RoutingContext>,
-    ) {
+        _local_sub: bool,
+    ) -> bool {
         let _ = self.handler.handle_message(ZenohMessage::make_data(
             key_expr.to_owned(),
             payload,
@@ -153,6 +165,7 @@ impl Primitives for Mux {
             None,
             None,
         ));
+        true
     }
 
     fn send_query(

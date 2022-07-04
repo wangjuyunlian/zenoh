@@ -115,6 +115,7 @@ pub mod publication;
 pub mod query;
 pub mod queryable;
 pub mod subscriber;
+pub mod sharedsubscriber;
 pub mod utils;
 
 pub mod plugins;

@@ -304,6 +304,7 @@ pub struct SubInfo {
     pub reliability: Reliability,
     pub mode: SubMode,
     pub period: Option<Period>,
+    pub shared: bool, // Third Party Modifications
 }
 
 #[derive(Debug, Clone, PartialEq)]

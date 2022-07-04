@@ -324,6 +324,7 @@ impl Primitives for Face {
         }
     }
 
+    // Third Party Modifications
     fn send_data(
         &self,
         key_expr: &KeyExpr,
@@ -332,7 +333,8 @@ impl Primitives for Face {
         congestion_control: CongestionControl,
         data_info: Option<DataInfo>,
         routing_context: Option<RoutingContext>,
-    ) {
+        local_sub: bool,
+    ) -> bool {
         full_reentrant_route_data(
             &self.tables,
             &self.state,
@@ -342,7 +344,9 @@ impl Primitives for Face {
             data_info,
             payload,
             routing_context,
+            local_sub,
         );
+        true
     }
 
     fn send_query(

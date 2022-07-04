@@ -81,6 +81,20 @@ impl ResourceContext {
     }
 }
 
+/// Third Party Modifications
+#[derive(Debug, Clone)]
+pub struct Shared {
+    pub(super) sub_pid: HashMap<PeerId, bool>,
+}
+impl Default for Shared {
+    fn default() -> Self {
+        Shared {
+            sub_pid: HashMap::new(),
+        }
+    }
+}
+
+/// Third Party Modifications
 pub struct Resource {
     pub(super) parent: Option<Arc<Resource>>,
     pub(super) suffix: String,
@@ -88,6 +102,7 @@ pub struct Resource {
     pub(super) childs: HashMap<String, Arc<Resource>>,
     pub(super) context: Option<ResourceContext>,
     pub(super) session_ctxs: HashMap<usize, Arc<SessionContext>>,
+    pub(super) shared: Shared,
 }
 
 impl PartialEq for Resource {
@@ -104,7 +119,13 @@ impl Hash for Resource {
 }
 
 impl Resource {
-    fn new(parent: &Arc<Resource>, suffix: &str, context: Option<ResourceContext>) -> Resource {
+    /// Third Party Modifications
+    fn new(
+        parent: &Arc<Resource>,
+        suffix: &str,
+        shared: Shared,
+        context: Option<ResourceContext>,
+    ) -> Resource {
         let nonwild_prefix = match &parent.nonwild_prefix {
             None => {
                 if suffix.contains('*') {
@@ -123,6 +144,7 @@ impl Resource {
             childs: HashMap::new(),
             context,
             session_ctxs: HashMap::new(),
+            shared, //Third Party Modifications
         }
     }
 
@@ -216,6 +238,7 @@ impl Resource {
             childs: HashMap::new(),
             context: None,
             session_ctxs: HashMap::new(),
+            shared: Shared::default(),
         })
     }
 
@@ -253,13 +276,33 @@ impl Resource {
         }
         result
     }
-
+    /// Third Party Modifications
     pub fn make_resource(
         tables: &mut Tables,
         from: &mut Arc<Resource>,
         suffix: &str,
+        shared: Shared,
     ) -> Arc<Resource> {
         if suffix.is_empty() {
+            for (pid, share) in shared.sub_pid.iter() {
+                if let Some(b) = get_mut_unchecked(from).shared.sub_pid.get_mut(pid) {
+                    match share {
+                        true => *b = true,
+                        false => *b = false,
+                    }
+                } else {
+                    match share {
+                        true => get_mut_unchecked(from)
+                            .shared
+                            .sub_pid
+                            .insert(pid.clone(), true),
+                        false => get_mut_unchecked(from)
+                            .shared
+                            .sub_pid
+                            .insert(pid.clone(), false),
+                    };
+                }
+            }
             Resource::upgrade_resource(from);
             from.clone()
         } else if let Some(stripped_suffix) = suffix.strip_prefix('/') {
@@ -269,13 +312,13 @@ impl Resource {
             };
 
             match get_mut_unchecked(from).childs.get_mut(chunk) {
-                Some(res) => Resource::make_resource(tables, res, rest),
+                Some(res) => Resource::make_resource(tables, res, rest, shared),
                 None => {
-                    let mut new = Arc::new(Resource::new(from, chunk, None));
+                    let mut new = Arc::new(Resource::new(from, chunk, shared.clone(), None));
                     if log::log_enabled!(log::Level::Debug) && rest.is_empty() {
                         log::debug!("Register resource {}", new.expr());
                     }
-                    let res = Resource::make_resource(tables, &mut new, rest);
+                    let res = Resource::make_resource(tables, &mut new, rest, shared);
                     get_mut_unchecked(from)
                         .childs
                         .insert(String::from(chunk), new);
@@ -284,9 +327,12 @@ impl Resource {
             }
         } else {
             match from.parent.clone() {
-                Some(mut parent) => {
-                    Resource::make_resource(tables, &mut parent, &[&from.suffix, suffix].concat())
-                }
+                Some(mut parent) => Resource::make_resource(
+                    tables,
+                    &mut parent,
+                    &[&from.suffix, suffix].concat(),
+                    shared,
+                ),
                 None => {
                     let (chunk, rest) = match suffix[1..].find('/') {
                         Some(idx) => (&suffix[0..(idx + 1)], &suffix[(idx + 1)..]),
@@ -294,13 +340,14 @@ impl Resource {
                     };
 
                     match get_mut_unchecked(from).childs.get_mut(chunk) {
-                        Some(res) => Resource::make_resource(tables, res, rest),
+                        Some(res) => Resource::make_resource(tables, res, rest, shared),
                         None => {
-                            let mut new = Arc::new(Resource::new(from, chunk, None));
+                            let mut new =
+                                Arc::new(Resource::new(from, chunk, shared.clone(), None));
                             if log::log_enabled!(log::Level::Debug) && rest.is_empty() {
                                 log::debug!("Register resource {}", new.expr());
                             }
-                            let res = Resource::make_resource(tables, &mut new, rest);
+                            let res = Resource::make_resource(tables, &mut new, rest, shared);
                             get_mut_unchecked(from)
                                 .childs
                                 .insert(String::from(chunk), new);
@@ -538,7 +585,9 @@ pub fn register_expr(
                 }
             }
             None => {
-                let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
+                let shared = prefix.shared.clone();
+                let mut res =
+                    Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref(), shared);
                 Resource::match_resource(tables, &mut res);
                 let mut ctx = get_mut_unchecked(&mut res)
                     .session_ctxs

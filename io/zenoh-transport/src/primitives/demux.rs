@@ -46,6 +46,11 @@ impl<P: 'static + Primitives> TransportPeerEventHandler for DeMux<P> {
                             self.primitives
                                 .decl_subscriber(&s.key, &s.info, msg.routing_context);
                         }
+                        Declaration::SharedSubscriber(ss) => {
+                            // Third Party Modifications
+                            self.primitives
+                                .decl_subscriber(&ss.key, &ss.info, msg.routing_context);
+                        }
                         Declaration::Queryable(q) => {
                             self.primitives.decl_queryable(
                                 &q.key,
@@ -88,6 +93,7 @@ impl<P: 'static + Primitives> TransportPeerEventHandler for DeMux<P> {
                         congestion_control,
                         data_info,
                         msg.routing_context,
+                        false,
                     );
                 }
                 Some(rep) => match rep.replier {

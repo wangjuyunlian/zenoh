@@ -13,17 +13,18 @@
 //
 
 //! Subscribing primitives.
-use crate::prelude::{Id, KeyExpr, Sample};
+use crate::prelude::{KeyExpr, Sample};
+use crate::subscriber::{SubscriberInvoker, SubscriberState};
 use crate::sync::channel::Receiver;
 use crate::sync::ZFuture;
 use crate::time::Period;
 use crate::API_DATA_RECEPTION_CHANNEL_SIZE;
 use crate::{Result as ZResult, SessionRef};
+use async_std::sync::Arc;
 use flume::r#async::RecvFut;
-use flume::{bounded, Iter, RecvError, RecvTimeoutError, Sender, TryIter, TryRecvError};
+use flume::{bounded, Iter, RecvError, RecvTimeoutError, TryIter, TryRecvError};
 use std::fmt;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::RwLock;
 use std::task::{Context, Poll};
 use zenoh_protocol_core::SubInfo;
@@ -35,35 +36,12 @@ pub use zenoh_protocol_core::SubMode;
 /// The kind of reliability.
 pub use zenoh_protocol_core::Reliability;
 
-/// The callback that will be called on each data for a [`CallbackSubscriber`](CallbackSubscriber).
+/// The callback that will be called on each data for a [`CallbackSharedSubscriber`](CallbackSharedSubscriber).
 pub type DataHandler = dyn FnMut(Sample) + Send + Sync + 'static;
-
-pub(crate) enum SubscriberInvoker {
-    Sender(Sender<Sample>),
-    Handler(Arc<RwLock<DataHandler>>),
-}
-
-pub(crate) struct SubscriberState {
-    pub(crate) id: Id,
-    pub(crate) key_expr: KeyExpr<'static>,
-    pub(crate) key_expr_str: String,
-    pub(crate) invoker: SubscriberInvoker,
-    pub(crate) shared: bool,
-}
-
-impl fmt::Debug for SubscriberState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Subscriber{{ id:{}, key_expr:{} }}",
-            self.id, self.key_expr_str
-        )
-    }
-}
 
 zreceiver! {
     /// A [`Receiver`] of [`Sample`](crate::prelude::Sample) returned by
-    /// [`Subscriber::receiver()`](Subscriber::receiver).
+    /// [`SharedSubscriber::receiver()`](SharedSubscriber::receiver).
     ///
     /// `SampleReceiver` implements the `Stream` trait as well as the
     /// [`Receiver`](crate::prelude::Receiver) trait which allows to access the samples:
@@ -73,8 +51,8 @@ zreceiver! {
     /// to access samples asynchronously without needing a mutable reference to the `SampleReceiver`.
     ///
     /// `SampleReceiver` implements `Clonable` and it's lifetime is not bound to it's associated
-    /// [`Subscriber`]. This is useful to move multiple instances to multiple threads/tasks and perform
-    /// job stealing. When the associated [`Subscriber`] is closed or dropped and all samples
+    /// [`SharedSubscriber`]. This is useful to move multiple instances to multiple threads/tasks and perform
+    /// job stealing. When the associated [`SharedSubscriber`] is closed or dropped and all samples
     /// have been received [`Receiver::recv()`](Receiver::recv) will return  `Error` and
     /// `Receiver::next()` will return `None`.
     ///
@@ -85,9 +63,9 @@ zreceiver! {
     /// use zenoh::prelude::*;
     /// let session = zenoh::open(config::peer()).await.unwrap();
     ///
-    /// let mut subscriber = session.subscribe("/key/expression").await.unwrap();
+    /// let mut SharedSubscriber = session.subscribe("/key/expression").await.unwrap();
     /// let task1 = async_std::task::spawn({
-    ///     let mut receiver = subscriber.receiver().clone();
+    ///     let mut receiver = SharedSubscriber.receiver().clone();
     ///     async move {
     ///         while let Some(sample) = receiver.next().await {
     ///             println!(">> Task1 received sample '{}'", sample);
@@ -95,7 +73,7 @@ zreceiver! {
     ///     }
     /// });
     /// let task2 = async_std::task::spawn({
-    ///     let mut receiver = subscriber.receiver().clone();
+    ///     let mut receiver = SharedSubscriber.receiver().clone();
     ///     async move {
     ///         while let Some(sample) = receiver.next().await {
     ///             println!(">> Task2 received sample '{}'", sample);
@@ -104,7 +82,7 @@ zreceiver! {
     /// });
     ///
     /// async_std::task::sleep(std::time::Duration::from_secs(1)).await;
-    /// subscriber.close().await.unwrap();
+    /// SharedSubscriber.close().await.unwrap();
     /// futures::join!(task1, task2);
     /// # })
     /// ```
@@ -113,16 +91,16 @@ zreceiver! {
 }
 
 zreceiver! {
-    /// A subscriber that provides data through a stream.
+    /// A SharedSubscriber that provides data through a stream.
     ///
-    /// `Subscriber` implements the `Stream` trait as well as the
+    /// `SharedSubscriber` implements the `Stream` trait as well as the
     /// [`Receiver`](crate::prelude::Receiver) trait which allows to access the samples:
     ///  - synchronously as with a [`std::sync::mpsc::Receiver`](std::sync::mpsc::Receiver)
     ///  - asynchronously as with a [`async_std::channel::Receiver`](async_std::channel::Receiver).
-    /// `Subscriber` also provides a [`recv_async()`](Subscriber::recv_async) function which allows
-    /// to access samples asynchronously without needing a mutable reference to the `Subscriber`.
+    /// `SharedSubscriber` also provides a [`recv_async()`](SharedSubscriber::recv_async) function which allows
+    /// to access samples asynchronously without needing a mutable reference to the `SharedSubscriber`.
     ///
-    /// Subscribers are automatically undeclared when dropped.
+    /// SharedSubscribers are automatically undeclared when dropped.
     ///
     /// # Examples
     ///
@@ -131,8 +109,8 @@ zreceiver! {
     /// # use zenoh::prelude::*;
     /// # let session = zenoh::open(config::peer()).wait().unwrap();
     ///
-    /// let mut subscriber = session.subscribe("/key/expression").wait().unwrap();
-    /// while let Ok(sample) = subscriber.recv() {
+    /// let mut SharedSubscriber = session.subscribe("/key/expression").wait().unwrap();
+    /// while let Ok(sample) = SharedSubscriber.recv() {
     ///      println!(">> Received sample '{}'", sample);
     /// }
     /// ```
@@ -144,13 +122,13 @@ zreceiver! {
     /// # use zenoh::prelude::*;
     /// # let session = zenoh::open(config::peer()).await.unwrap();
     ///
-    /// let mut subscriber = session.subscribe("/key/expression").await.unwrap();
-    /// while let Some(sample) = subscriber.next().await {
+    /// let mut SharedSubscriber = session.subscribe("/key/expression").await.unwrap();
+    /// while let Some(sample) = SharedSubscriber.next().await {
     ///      println!(">> Received sample '{}'", sample);
     /// }
     /// # })
     /// ```
-    pub struct Subscriber<'a> : Receiver<Sample> {
+    pub struct SharedSubscriber<'a> : Receiver<Sample> {
         pub(crate) session: SessionRef<'a>,
         pub(crate) state: Arc<SubscriberState>,
         pub(crate) alive: bool,
@@ -158,29 +136,29 @@ zreceiver! {
     }
 }
 
-impl Subscriber<'_> {
+impl SharedSubscriber<'_> {
     /// Returns a `Clonable` [`SampleReceiver`] which lifetime is not bound to
-    /// the associated `Subscriber` lifetime.
+    /// the associated `SharedSubscriber` lifetime.
     pub fn receiver(&mut self) -> &mut SampleReceiver {
         &mut self.sample_receiver
     }
 
-    /// Pull available data for a pull-mode [`Subscriber`](Subscriber).
+    /// Pull available data for a pull-mode [`SharedSubscriber`](SharedSubscriber).
     ///
     /// # Examples
     /// ```
     /// # async_std::task::block_on(async {
     /// use futures::prelude::*;
     /// use zenoh::prelude::*;
-    /// use zenoh::subscriber::SubMode;
+    /// use zenoh::SharedSubscriber::SubMode;
     ///
     /// let session = zenoh::open(config::peer()).await.unwrap();
-    /// let mut subscriber = session.subscribe("/key/expression")
+    /// let mut SharedSubscriber = session.subscribe("/key/expression")
     ///                             .mode(SubMode::Pull).await.unwrap();
-    /// async_std::task::spawn(subscriber.receiver().clone().for_each(
+    /// async_std::task::spawn(SharedSubscriber.receiver().clone().for_each(
     ///     move |sample| async move { println!("Received : {:?}", sample); }
     /// ));
-    /// subscriber.pull();
+    /// SharedSubscriber.pull();
     /// # })
     /// ```
     #[must_use = "ZFutures do nothing unless you `.wait()`, `.await` or poll them"]
@@ -188,10 +166,10 @@ impl Subscriber<'_> {
         self.session.pull(&self.state.key_expr)
     }
 
-    /// Close a [`Subscriber`](Subscriber) previously created with [`subscribe`](crate::Session::subscribe).
+    /// Close a [`SharedSubscriber`](SharedSubscriber) previously created with [`subscribe`](crate::Session::subscribe).
     ///
-    /// Subscribers are automatically closed when dropped, but you may want to use this function to handle errors or
-    /// close the Subscriber asynchronously.
+    /// SharedSubscribers are automatically closed when dropped, but you may want to use this function to handle errors or
+    /// close the SharedSubscriber asynchronously.
     ///
     /// # Examples
     /// ```
@@ -199,8 +177,8 @@ impl Subscriber<'_> {
     /// use zenoh::prelude::*;
     ///
     /// let session = zenoh::open(config::peer()).await.unwrap();
-    /// let subscriber = session.subscribe("/key/expression").await.unwrap();
-    /// subscriber.close().await.unwrap();
+    /// let SharedSubscriber = session.subscribe("/key/expression").await.unwrap();
+    /// SharedSubscriber.close().await.unwrap();
     /// # })
     /// ```
     #[inline]
@@ -211,7 +189,7 @@ impl Subscriber<'_> {
     }
 }
 
-impl Drop for Subscriber<'_> {
+impl Drop for SharedSubscriber<'_> {
     fn drop(&mut self) {
         if self.alive {
             let _ = self.session.unsubscribe(self.state.id).wait();
@@ -219,35 +197,35 @@ impl Drop for Subscriber<'_> {
     }
 }
 
-impl fmt::Debug for Subscriber<'_> {
+impl fmt::Debug for SharedSubscriber<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.state.fmt(f)
     }
 }
 
-/// A subscriber that provides data through a callback.
+/// A SharedSubscriber that provides data through a callback.
 ///
-/// Subscribers are automatically undeclared when dropped.
-pub struct CallbackSubscriber<'a> {
+/// SharedSubscribers are automatically undeclared when dropped.
+pub struct CallbackSharedSubscriber<'a> {
     pub(crate) session: SessionRef<'a>,
     pub(crate) state: Arc<SubscriberState>,
     pub(crate) alive: bool,
 }
 
-impl CallbackSubscriber<'_> {
-    /// Pull available data for a pull-mode [`CallbackSubscriber`](CallbackSubscriber).
+impl CallbackSharedSubscriber<'_> {
+    /// Pull available data for a pull-mode [`CallbackSharedSubscriber`](CallbackSharedSubscriber).
     ///
     /// # Examples
     /// ```
     /// # async_std::task::block_on(async {
     /// use zenoh::prelude::*;
-    /// use zenoh::subscriber::SubMode;
+    /// use zenoh::SharedSubscriber::SubMode;
     ///
     /// let session = zenoh::open(config::peer()).await.unwrap();
-    /// let subscriber = session.subscribe("/key/expression")
+    /// let SharedSubscriber = session.subscribe("/key/expression")
     ///     .callback(|sample| { println!("Received : {} {}", sample.key_expr, sample.value); })
     ///     .mode(SubMode::Pull).await.unwrap();
-    /// subscriber.pull();
+    /// SharedSubscriber.pull();
     /// # })
     /// ```
     #[must_use = "ZFutures do nothing unless you `.wait()`, `.await` or poll them"]
@@ -255,10 +233,10 @@ impl CallbackSubscriber<'_> {
         self.session.pull(&self.state.key_expr)
     }
 
-    /// Undeclare a [`CallbackSubscriber`](CallbackSubscriber).
+    /// Undeclare a [`CallbackSharedSubscriber`](CallbackSharedSubscriber).
     ///
-    /// `CallbackSubscribers` are automatically undeclared when dropped, but you may want to use this function to handle errors or
-    /// undeclare the `CallbackSubscriber` asynchronously.
+    /// `CallbackSharedSubscribers` are automatically undeclared when dropped, but you may want to use this function to handle errors or
+    /// undeclare the `CallbackSharedSubscriber` asynchronously.
     ///
     /// # Examples
     /// ```
@@ -267,9 +245,9 @@ impl CallbackSubscriber<'_> {
     ///
     /// let session = zenoh::open(config::peer()).await.unwrap();
     /// # fn data_handler(_sample: Sample) { };
-    /// let subscriber = session.subscribe("/key/expression")
+    /// let SharedSubscriber = session.subscribe("/key/expression")
     ///     .callback(data_handler).await.unwrap();
-    /// subscriber.undeclare().await.unwrap();
+    /// SharedSubscriber.undeclare().await.unwrap();
     /// # })
     /// ```
     #[inline]
@@ -280,7 +258,7 @@ impl CallbackSubscriber<'_> {
     }
 }
 
-impl Drop for CallbackSubscriber<'_> {
+impl Drop for CallbackSharedSubscriber<'_> {
     fn drop(&mut self) {
         if self.alive {
             let _ = self.session.unsubscribe(self.state.id).wait();
@@ -288,14 +266,14 @@ impl Drop for CallbackSubscriber<'_> {
     }
 }
 
-impl fmt::Debug for CallbackSubscriber<'_> {
+impl fmt::Debug for CallbackSharedSubscriber<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.state.fmt(f)
     }
 }
 
 derive_zfuture! {
-    /// A builder for initializing a [`Subscriber`](Subscriber).
+    /// A builder for initializing a [`SharedSubscriber`](SharedSubscriber).
     ///
     /// The result of this builder can be accessed synchronously via [`wait()`](ZFuture::wait())
     /// or asynchronously via `.await`.
@@ -306,7 +284,7 @@ derive_zfuture! {
     /// use zenoh::prelude::*;
     ///
     /// let session = zenoh::open(config::peer()).await.unwrap();
-    /// let subscriber = session
+    /// let SharedSubscriber = session
     ///     .subscribe("/key/expression")
     ///     .best_effort()
     ///     .pull_mode()
@@ -315,7 +293,7 @@ derive_zfuture! {
     /// # })
     /// ```
     #[derive(Debug, Clone)]
-    pub struct SubscriberBuilder<'a, 'b> {
+    pub struct SharedSubscriberBuilder<'a, 'b> {
         pub(crate) session: SessionRef<'a>,
         pub(crate) key_expr: KeyExpr<'b>,
         pub(crate) reliability: Reliability,
@@ -325,14 +303,17 @@ derive_zfuture! {
     }
 }
 
-impl<'a, 'b> SubscriberBuilder<'a, 'b> {
-    /// Make the built Subscriber a [`CallbackSubscriber`](CallbackSubscriber).
+impl<'a, 'b> SharedSubscriberBuilder<'a, 'b> {
+    /// Make the built SharedSubscriber a [`CallbackSharedSubscriber`](CallbackSharedSubscriber).
     #[inline]
-    pub fn callback<DataHandler>(self, handler: DataHandler) -> CallbackSubscriberBuilder<'a, 'b>
+    pub fn callback<DataHandler>(
+        self,
+        handler: DataHandler,
+    ) -> CallbackSharedSubscriberBuilder<'a, 'b>
     where
         DataHandler: FnMut(Sample) + Send + Sync + 'static,
     {
-        CallbackSubscriberBuilder {
+        CallbackSharedSubscriberBuilder {
             session: self.session,
             key_expr: self.key_expr,
             reliability: self.reliability,
@@ -401,8 +382,8 @@ impl<'a, 'b> SubscriberBuilder<'a, 'b> {
     }
 }
 
-impl<'a> Runnable for SubscriberBuilder<'a, '_> {
-    type Output = ZResult<Subscriber<'a>>;
+impl<'a> Runnable for SharedSubscriberBuilder<'a, '_> {
+    type Output = ZResult<SharedSubscriber<'a>>;
 
     fn run(&mut self) -> Self::Output {
         log::trace!("subscribe({:?})", self.key_expr);
@@ -413,10 +394,10 @@ impl<'a> Runnable for SubscriberBuilder<'a, '_> {
                 .declare_any_local_subscriber(
                     &self.key_expr,
                     SubscriberInvoker::Sender(sender),
-                    false,
+                    true,
                 )
                 .map(|sub_state| {
-                    Subscriber::new(
+                    SharedSubscriber::new(
                         self.session.clone(),
                         sub_state,
                         true,
@@ -433,11 +414,11 @@ impl<'a> Runnable for SubscriberBuilder<'a, '_> {
                         reliability: self.reliability,
                         mode: self.mode,
                         period: self.period,
-                        shared: false,
+                        shared: true,
                     },
                 )
                 .map(|sub_state| {
-                    Subscriber::new(
+                    SharedSubscriber::new(
                         self.session.clone(),
                         sub_state,
                         true,
@@ -450,7 +431,7 @@ impl<'a> Runnable for SubscriberBuilder<'a, '_> {
 }
 
 derive_zfuture! {
-    /// A builder for initializing a [`CallbackSubscriber`](CallbackSubscriber).
+    /// A builder for initializing a [`CallbackSharedSubscriber`](CallbackSharedSubscriber).
     ///
     /// The result of this builder can be accessed synchronously via [`wait()`](ZFuture::wait())
     /// or asynchronously via `.await`.
@@ -461,7 +442,7 @@ derive_zfuture! {
     /// use zenoh::prelude::*;
     ///
     /// let session = zenoh::open(config::peer()).await.unwrap();
-    /// let subscriber = session
+    /// let SharedSubscriber = session
     ///     .subscribe("/key/expression")
     ///     .callback(|sample| { println!("Received : {} {}", sample.key_expr, sample.value); })
     ///     .best_effort()
@@ -471,7 +452,7 @@ derive_zfuture! {
     /// # })
     /// ```
     #[derive(Clone)]
-    pub struct CallbackSubscriberBuilder<'a, 'b> {
+    pub struct CallbackSharedSubscriberBuilder<'a, 'b> {
         session: SessionRef<'a>,
         key_expr: KeyExpr<'b>,
         reliability: Reliability,
@@ -482,9 +463,9 @@ derive_zfuture! {
     }
 }
 
-impl fmt::Debug for CallbackSubscriberBuilder<'_, '_> {
+impl fmt::Debug for CallbackSharedSubscriberBuilder<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CallbackSubscriberBuilder")
+        f.debug_struct("CallbackSharedSubscriberBuilder")
             .field("session", &self.session)
             .field("key_expr", &self.key_expr)
             .field("reliability", &self.reliability)
@@ -494,7 +475,7 @@ impl fmt::Debug for CallbackSubscriberBuilder<'_, '_> {
     }
 }
 
-impl<'a, 'b> CallbackSubscriberBuilder<'a, 'b> {
+impl<'a, 'b> CallbackSharedSubscriberBuilder<'a, 'b> {
     /// Change the subscription reliability.
     #[inline]
     pub fn reliability(mut self, reliability: Reliability) -> Self {
@@ -553,11 +534,11 @@ impl<'a, 'b> CallbackSubscriberBuilder<'a, 'b> {
     }
 }
 
-impl<'a> Runnable for CallbackSubscriberBuilder<'a, '_> {
-    type Output = ZResult<CallbackSubscriber<'a>>;
+impl<'a> Runnable for CallbackSharedSubscriberBuilder<'a, '_> {
+    type Output = ZResult<CallbackSharedSubscriber<'a>>;
 
     fn run(&mut self) -> Self::Output {
-        log::trace!("declare_callback_subscriber({:?})", self.key_expr);
+        log::trace!("declare_callback_SharedSubscriber({:?})", self.key_expr);
 
         if self.local {
             self.session
@@ -566,7 +547,7 @@ impl<'a> Runnable for CallbackSubscriberBuilder<'a, '_> {
                     SubscriberInvoker::Handler(self.handler.clone()),
                     false,
                 )
-                .map(|sub_state| CallbackSubscriber {
+                .map(|sub_state| CallbackSharedSubscriber {
                     session: self.session.clone(),
                     state: sub_state,
                     alive: true,
@@ -583,7 +564,7 @@ impl<'a> Runnable for CallbackSubscriberBuilder<'a, '_> {
                         shared: false,
                     },
                 )
-                .map(|sub_state| CallbackSubscriber {
+                .map(|sub_state| CallbackSharedSubscriber {
                     session: self.session.clone(),
                     state: sub_state,
                     alive: true,

@@ -54,6 +54,7 @@ fn base_test() {
         reliability: Reliability::Reliable,
         mode: SubMode::Push,
         period: None,
+        shared: false,
     };
     declare_client_subscription(
         &mut tables,
@@ -231,6 +232,7 @@ fn clean_test() {
         reliability: Reliability::Reliable,
         mode: SubMode::Push,
         period: None,
+        shared: false,
     };
 
     declare_client_subscription(
@@ -456,8 +458,10 @@ impl Primitives for ClientPrimitives {
         _congestion_control: CongestionControl,
         _info: Option<DataInfo>,
         _routing_context: Option<RoutingContext>,
-    ) {
+        _local_sub: bool,
+    ) -> bool {
         *zlock!(self.data) = Some(key_expr.to_owned());
+        true
     }
 
     fn send_query(
@@ -507,6 +511,7 @@ fn client_test() {
         reliability: Reliability::Reliable,
         mode: SubMode::Push,
         period: None,
+        shared: false,
     };
 
     let primitives0 = Arc::new(ClientPrimitives::new());

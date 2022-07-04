@@ -283,6 +283,7 @@ impl Primitives for AdminSpace {
         trace!("recv Forget Queryable {:?}", _key_expr);
     }
 
+    // Third Party Modifications
     fn send_data(
         &self,
         key_expr: &KeyExpr,
@@ -291,7 +292,8 @@ impl Primitives for AdminSpace {
         congestion_control: CongestionControl,
         data_info: Option<DataInfo>,
         _routing_context: Option<RoutingContext>,
-    ) {
+        _local_sub: bool,
+    ) -> bool {
         trace!(
             "recv Data {:?} {:?} {:?} {:?} {:?}",
             key_expr,
@@ -347,6 +349,7 @@ impl Primitives for AdminSpace {
                 }
             }
         }
+        true
     }
 
     fn send_query(

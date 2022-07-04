@@ -12,6 +12,7 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 use petgraph::graph::NodeIndex;
+use rand::Rng; // Third Party Modifications
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -28,7 +29,7 @@ use zenoh_protocol_core::{
 
 use super::face::FaceState;
 use super::network::Network;
-use super::resource::{elect_router, PullCaches, Resource, Route, SessionContext};
+use super::resource::{elect_router, PullCaches, Resource, Route, SessionContext, Shared};
 use super::router::Tables;
 
 #[inline]
@@ -166,7 +167,16 @@ pub fn declare_router_subscription(
 ) {
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(mut prefix) => {
-            let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
+            // Third Party Modifications
+            let mut sub_pid: HashMap<PeerId, bool> = HashMap::new();
+            match sub_info.shared {
+                true => sub_pid.insert(router.clone(), true),
+                false => sub_pid.insert(router.clone(), false),
+            };
+            let shared = Shared { sub_pid };
+
+            let mut res =
+                Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref(), shared);
             Resource::match_resource(tables, &mut res);
             register_router_subscription(tables, face, &mut res, sub_info, router);
 
@@ -208,7 +218,16 @@ pub fn declare_peer_subscription(
 ) {
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(mut prefix) => {
-            let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
+            // Third Party Modifications
+            let mut sub_pid: HashMap<PeerId, bool> = HashMap::new();
+            match sub_info.shared {
+                true => sub_pid.insert(peer.clone(), true),
+                false => sub_pid.insert(peer.clone(), false),
+            };
+            let shared = Shared { sub_pid };
+
+            let mut res =
+                Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref(), shared);
             Resource::match_resource(tables, &mut res);
             register_peer_subscription(tables, face, &mut res, sub_info, peer);
 
@@ -275,8 +294,16 @@ pub fn declare_client_subscription(
     log::debug!("Register client subscription");
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(mut prefix) => {
-            let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
-            log::debug!("Register client subscription {}", res.expr());
+            // Third Party Modifications
+            let mut sub_pid: HashMap<PeerId, bool> = HashMap::new();
+            match sub_info.shared {
+                true => sub_pid.insert(face.pid.clone(), true),
+                false => sub_pid.insert(face.pid.clone(), false),
+            };
+            let shared = Shared { sub_pid };
+
+            let mut res =
+                Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref(), shared);
             Resource::match_resource(tables, &mut res);
 
             register_client_subscription(tables, face, &mut res, sub_info);
@@ -587,6 +614,7 @@ pub(crate) fn pubsub_new_face(tables: &mut Tables, face: &mut Arc<FaceState>) {
         reliability: Reliability::Reliable, // @TODO
         mode: SubMode::Push,
         period: None,
+        shared: false, // Third Party Modifications
     };
     if face.whatami == WhatAmI::Client && tables.whatami != WhatAmI::Client {
         for sub in &tables.router_subs {
@@ -674,12 +702,21 @@ pub(crate) fn pubsub_tree_change(
                         WhatAmI::Router => &res.context().router_subs,
                         _ => &res.context().peer_subs,
                     };
+                    // Third Party Modifications
+                    let shared = match res.shared.sub_pid.get(&tables.pid) {
+                        Some(b) => match b {
+                            true => true,
+                            false => false,
+                        },
+                        None => false,
+                    };
                     for sub in subs {
                         if *sub == tree_id {
                             let sub_info = SubInfo {
                                 reliability: Reliability::Reliable, // @TODO
                                 mode: SubMode::Push,
                                 period: None,
+                                shared, // Third Party Modifications
                             };
                             send_sourced_subscription_to_net_childs(
                                 tables,
@@ -968,6 +1005,45 @@ macro_rules! treat_timestamp {
     }
 }
 
+// Third Party Modifications
+macro_rules! treat_timestamp_shared {
+    ($hlc:expr, $info:expr, $return_value:expr) => {
+        // if an HLC was configured (via Config.add_timestamp),
+        // check DataInfo and add a timestamp if there isn't
+        match $hlc {
+            Some(hlc) => {
+                if let Some(mut data_info) = $info {
+                    if let Some(ref ts) = data_info.timestamp {
+                        // Timestamp is present; update HLC with it (possibly raising error if delta exceed)
+                        match hlc.update_with_timestamp(ts) {
+                            Ok(()) => Some(data_info),
+                            Err(e) => {
+                                log::error!(
+                                    "Error treating timestamp for received Data ({}): drop it!",
+                                    e
+                                );
+                                $return_value = true;
+                                return $return_value;
+                            }
+                        }
+                    } else {
+                        // Timestamp not present; add one
+                        data_info.timestamp = Some(hlc.new_timestamp());
+                        log::trace!("Adding timestamp to DataInfo: {:?}", data_info.timestamp);
+                        Some(data_info)
+                    }
+                } else {
+                    // No DataInfo; add one with a Timestamp
+                    let mut data_info = DataInfo::new();
+                    data_info.timestamp = Some(hlc.new_timestamp());
+                    Some(data_info)
+                }
+            },
+            None => $info,
+        }
+    }
+}
+
 #[inline]
 fn get_data_route(
     tables: &Tables,
@@ -1075,7 +1151,8 @@ macro_rules! send_to_first {
                     $cong_ctrl,
                     $data_info,
                     *context,
-                )
+                    false, // Third Party Modifications
+                );
         }
     }
 }
@@ -1093,10 +1170,80 @@ macro_rules! send_to_all {
                         $cong_ctrl,
                         $data_info.clone(),
                         *context,
-                    )
+                        false, // Third Party Modifications
+                    );
             }
         }
     }
+}
+
+// Third Party Modifications
+macro_rules! send_to_all_shared {
+    ($route:expr, $srcface:expr, $payload:expr, $channel:expr, $cong_ctrl:expr, $data_info:expr, $return_value:expr, $local_sub:expr) => {
+        let mut shared_queue = Vec::new();
+        for (key, (outface, key_expr, context)) in $route.iter() {
+            let mut shared_value = false;
+            if let Some(res) = outface.get_mapping(&key_expr.as_id()) {
+                match res.shared.sub_pid.get(&outface.pid) {
+                    Some(b) => shared_value = *b,
+                    None => {
+                        for (_, res) in res.childs.iter() {
+                            if let Some(b) = res.shared.sub_pid.get(&outface.pid) {
+                                shared_value = *b
+                            }
+                        }
+                    }
+                }
+            }
+
+            if $srcface.pid == outface.pid {
+                if $local_sub {
+                    shared_queue.push(key);
+                }
+            }else if $srcface.id != outface.id {
+                if shared_value {
+                    shared_queue.push(key);
+                }else {
+                    outface
+                    .primitives
+                    .send_data(
+                        &key_expr,
+                        $payload.clone(),
+                        $channel, // @TODO: Need to check the active subscriptions to determine the right reliability value
+                        $cong_ctrl,
+                        $data_info.clone(),
+                        *context,
+                        false,
+                    );
+                }
+            }
+        }
+
+        if shared_queue.len() > 0 {
+            let rng = rand::thread_rng().gen_range(0..shared_queue.len());
+            if let Some((outface, reskey, context)) = $route.get(shared_queue[rng]) {
+                if $srcface.pid != outface.pid {
+                    if $srcface.id != outface.id {
+                        outface
+                            .primitives
+                            .send_data(
+                                &reskey,
+                                $payload.clone(),
+                                $channel, // @TODO: Need to check the active subscriptions to determine the right reliability value
+                                $cong_ctrl,
+                                $data_info.clone(),
+                                *context,
+                                false,
+                            );
+                        $return_value = false;
+                    }
+                }
+            }
+        }
+        if !$local_sub {
+            $return_value = true;
+        }
+    };
 }
 
 macro_rules! cache_data {
@@ -1185,7 +1332,9 @@ pub fn full_reentrant_route_data(
     info: Option<DataInfo>,
     payload: ZBuf,
     routing_context: Option<RoutingContext>,
-) {
+    local_sub: bool,
+) -> bool {
+    let mut return_value = true;
     let tables = zread!(tables_ref);
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(prefix) => {
@@ -1207,7 +1356,7 @@ pub fn full_reentrant_route_data(
             let matching_pulls = get_matching_pulls(&tables, &res, &prefix, expr.suffix.as_ref());
 
             if !(route.is_empty() && matching_pulls.is_empty()) {
-                let data_info = treat_timestamp!(&tables.hlc, info);
+                let data_info = treat_timestamp_shared!(&tables.hlc, info, return_value);
 
                 if route.len() == 1 && matching_pulls.len() == 0 {
                     drop(tables);
@@ -1225,7 +1374,16 @@ pub fn full_reentrant_route_data(
                         drop(lock);
                     }
                     drop(tables);
-                    send_to_all!(route, face, payload, channel, congestion_control, data_info);
+                    send_to_all_shared!(
+                        route,
+                        face,
+                        payload,
+                        channel,
+                        congestion_control,
+                        data_info,
+                        return_value,
+                        local_sub
+                    );
                 }
             }
         }
@@ -1233,6 +1391,7 @@ pub fn full_reentrant_route_data(
             log::error!("Route data with unknown scope {}!", expr.scope);
         }
     }
+    return return_value;
 }
 
 pub fn pull_data(
@@ -1264,6 +1423,7 @@ pub fn pull_data(
                                     CongestionControl::default(), // @TODO: Default value for the time being
                                     info.clone(),
                                     None,
+                                    false, // Third Party Modifications
                                 );
                             }
                             get_mut_unchecked(ctx).last_values.clear();

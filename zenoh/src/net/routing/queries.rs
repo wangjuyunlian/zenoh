@@ -33,7 +33,7 @@ use zenoh_protocol_core::{
 use super::face::FaceState;
 use super::network::Network;
 use super::resource::{
-    elect_router, QueryRoute, Resource, SessionContext, TargetQabl, TargetQablSet,
+    elect_router, QueryRoute, Resource, SessionContext, Shared, TargetQabl, TargetQablSet,
 };
 use super::router::Tables;
 
@@ -357,7 +357,13 @@ pub fn declare_router_queryable(
 ) {
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(mut prefix) => {
-            let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
+            // Third Party Modifications
+            let mut res = Resource::make_resource(
+                tables,
+                &mut prefix,
+                expr.suffix.as_ref(),
+                Shared::default(),
+            );
             Resource::match_resource(tables, &mut res);
             register_router_queryable(tables, Some(face), &mut res, kind, qabl_info, router);
 
@@ -407,8 +413,14 @@ pub fn declare_peer_queryable(
 ) {
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(mut prefix) => {
+            // Third Party Modifications
             let face = Some(face);
-            let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
+            let mut res = Resource::make_resource(
+                tables,
+                &mut prefix,
+                expr.suffix.as_ref(),
+                Shared::default(),
+            );
             Resource::match_resource(tables, &mut res);
             register_peer_queryable(tables, face.as_deref(), &mut res, kind, qabl_info, peer);
 
@@ -466,7 +478,13 @@ pub fn declare_client_queryable(
 ) {
     match tables.get_mapping(face, &expr.scope).cloned() {
         Some(mut prefix) => {
-            let mut res = Resource::make_resource(tables, &mut prefix, expr.suffix.as_ref());
+            // Third Party Modifications
+            let mut res = Resource::make_resource(
+                tables,
+                &mut prefix,
+                expr.suffix.as_ref(),
+                Shared::default(),
+            );
             Resource::match_resource(tables, &mut res);
 
             register_client_queryable(tables, face, &mut res, kind, qabl_info);

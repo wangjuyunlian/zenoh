@@ -57,6 +57,7 @@ fn tables_bench(c: &mut Criterion) {
         reliability: Reliability::Reliable,
         mode: SubMode::Push,
         period: None,
+        shared: false,
     };
 
     for p in [8, 32, 256, 1024, 8192].iter() {

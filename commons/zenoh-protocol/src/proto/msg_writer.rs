@@ -469,6 +469,16 @@ impl MessageWriter for WBuf {
                 }
                 true
             }
+            // Third Party Modifications
+            Declaration::SharedSubscriber(ss) => {
+                let header = ss.header();
+                zcheck!(self.write_byte(header).is_some());
+                zcheck!(self.write_key_expr(&ss.key));
+                if imsg::has_flag(header, zmsg::flag::S) {
+                    zcheck!(self.write_submode(&ss.info.mode, &ss.info.period))
+                }
+                true
+            }
             Declaration::ForgetSubscriber(fs) => {
                 self.write_byte(fs.header()).is_some() && self.write_key_expr(&fs.key)
             }

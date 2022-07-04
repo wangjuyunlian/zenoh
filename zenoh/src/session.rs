@@ -22,6 +22,7 @@ use crate::prelude::EntityFactory;
 use crate::publication::*;
 use crate::query::*;
 use crate::queryable::*;
+use crate::sharedsubscriber::SharedSubscriberBuilder;
 use crate::subscriber::*;
 use crate::sync::zready;
 use crate::Id;
@@ -121,7 +122,7 @@ impl SessionState {
     }
 
     #[inline]
-    fn get_res(&self, id: &ExprId, local: bool) -> Option<&Resource> {
+    pub(super) fn get_res(&self, id: &ExprId, local: bool) -> Option<&Resource> {
         if local {
             self.get_local_res(id)
         } else {
@@ -720,6 +721,7 @@ impl Session {
             key_expr: key_expr.to_owned(),
             key_expr_str,
             invoker,
+            shared: info.shared, // Third Party Modifications
         });
         let declared_sub = match state
             .join_subscriptions
@@ -789,6 +791,7 @@ impl Session {
         &self,
         key_expr: &KeyExpr,
         invoker: SubscriberInvoker,
+        shared: bool,
     ) -> ZResult<Arc<SubscriberState>> {
         let mut state = zwrite!(self.state);
         let id = state.decl_id_counter.fetch_add(1, Ordering::SeqCst);
@@ -798,6 +801,7 @@ impl Session {
             key_expr: key_expr.to_owned(),
             key_expr_str,
             invoker,
+            shared,
         });
         state
             .local_subscribers
@@ -843,6 +847,42 @@ impl Session {
         IntoKeyExpr: Into<KeyExpr<'b>>,
     {
         SubscriberBuilder {
+            session: SessionRef::Borrow(self),
+            key_expr: key_expr.into(),
+            reliability: Reliability::default(),
+            mode: SubMode::default(),
+            period: None,
+            local: false,
+        }
+    }
+
+    /// Create a [`SharedSubscriber`](SharedSubscriber) for the given key expression.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_expr` - The resourkey expression to shared_subscribe to
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # async_std::task::block_on(async {
+    /// use futures::prelude::*;
+    /// use zenoh::prelude::*;
+    ///
+    /// let session = zenoh::open(config::peer()).await.unwrap();
+    /// let mut shared_subscriber = session.shared_subscribe("/key/expression").await.unwrap();
+    /// while let Some(sample) = shared_subscriber.next().await {
+    ///     println!("Received : {:?}", sample);
+    /// }
+    /// # })
+    /// ```
+    pub fn shared_subscribe<'a, 'b, IntoKeyExpr>(
+        &'a self,
+        key_expr: IntoKeyExpr,
+    ) -> SharedSubscriberBuilder<'a, 'b>
+    where
+        IntoKeyExpr: Into<KeyExpr<'b>>,
+    {
+        SharedSubscriberBuilder {
             session: SessionRef::Borrow(self),
             key_expr: key_expr.into(),
             reliability: Reliability::default(),
@@ -1569,7 +1609,8 @@ impl Primitives for Session {
         congestion_control: CongestionControl,
         info: Option<DataInfo>,
         _routing_context: Option<RoutingContext>,
-    ) {
+        _local_sub: bool,
+    ) -> bool {
         trace!(
             "recv Data {:?} {:?} {:?} {:?} {:?}",
             key_expr,
@@ -1578,7 +1619,8 @@ impl Primitives for Session {
             congestion_control,
             info,
         );
-        self.handle_data(false, key_expr, info, payload, None)
+        self.handle_data(false, key_expr, info, payload, None);
+        true
     }
 
     fn send_query(

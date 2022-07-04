@@ -685,6 +685,30 @@ impl MessageReader for ZBufReader<'_> {
                         reliability,
                         mode,
                         period,
+                        shared: false, // Third Party Modifications
+                    },
+                }))
+            }
+            // Third Party Modifications
+            SHARED_SUBSCRIBER => {
+                let reliability = if imsg::has_flag(header, zmsg::flag::R) {
+                    Reliability::Reliable
+                } else {
+                    Reliability::BestEffort
+                };
+                let key = self.read_key_expr(imsg::has_flag(header, zmsg::flag::K))?;
+                let (mode, period) = if imsg::has_flag(header, zmsg::flag::S) {
+                    self.read_submode()?
+                } else {
+                    (SubMode::Push, None)
+                };
+                Some(Declaration::SharedSubscriber(SharedSubscriber {
+                    key,
+                    info: SubInfo {
+                        reliability,
+                        mode,
+                        period,
+                        shared: true,
                     },
                 }))
             }

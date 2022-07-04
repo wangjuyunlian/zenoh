@@ -53,6 +53,7 @@ pub trait Primitives: Send + Sync {
         routing_context: Option<RoutingContext>,
     );
 
+    // Third Party Modifications
     fn send_data(
         &self,
         key_expr: &KeyExpr,
@@ -61,7 +62,8 @@ pub trait Primitives: Send + Sync {
         cogestion_control: CongestionControl,
         data_info: Option<DataInfo>,
         routing_context: Option<RoutingContext>,
-    );
+        local_sub: bool,
+    ) -> bool;
 
     fn send_query(
         &self,
@@ -137,6 +139,7 @@ impl Primitives for DummyPrimitives {
     ) {
     }
 
+    // Third Party Modifications
     fn send_data(
         &self,
         _key_expr: &KeyExpr,
@@ -145,7 +148,9 @@ impl Primitives for DummyPrimitives {
         _cogestion_control: CongestionControl,
         _info: Option<DataInfo>,
         _routing_context: Option<RoutingContext>,
-    ) {
+        _local_sub: bool,
+    ) -> bool {
+        true
     }
     fn send_query(
         &self,

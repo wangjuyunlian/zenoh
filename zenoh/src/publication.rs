@@ -19,6 +19,7 @@ use crate::prelude::*;
 use crate::subscriber::Reliability;
 use crate::Encoding;
 use crate::SessionRef;
+use log::trace;
 use zenoh_core::zread;
 use zenoh_core::zresult::ZResult;
 use zenoh_protocol::proto::{data_kind, DataInfo, Options};
@@ -122,7 +123,22 @@ impl<'a> Writer<'a> {
         info.timestamp = self.session.runtime.new_timestamp();
         let data_info = if info.has_options() { Some(info) } else { None };
 
-        primitives.send_data(
+        // Third Party Modifications
+        let mut local_sub = false;
+        let state = zread!(self.session.state);
+        let id = self.key_expr.as_id();
+        match state.get_res(&id, true) {
+            Some(res) => {
+                for i in res.subscribers.iter() {
+                    if i.shared {
+                        local_sub = true;
+                    }
+                }
+            }
+            None => trace!("Received Data for unkown id: {}", id),
+        }
+
+        let result = primitives.send_data(
             &self.key_expr,
             value.payload.clone(),
             Channel {
@@ -132,14 +148,19 @@ impl<'a> Writer<'a> {
             self.congestion_control,
             data_info.clone(),
             None,
+            local_sub,
         );
-        self.session.handle_data(
-            true,
-            &self.key_expr,
-            data_info,
-            value.payload,
-            self.local_routing,
-        );
+
+        if result {
+            self.session.handle_data(
+                true,
+                &self.key_expr,
+                data_info,
+                value.payload,
+                self.local_routing,
+            );
+        }
+
         Ok(())
     }
 }

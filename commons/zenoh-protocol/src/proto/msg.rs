@@ -225,6 +225,9 @@ pub mod zmsg {
             pub const RESOURCE: u8 = 0x01;
             pub const PUBLISHER: u8 = 0x02;
             pub const SUBSCRIBER: u8 = 0x03;
+
+            pub const SHARED_SUBSCRIBER: u8 = 0x0b; // Third Party Modifications
+
             pub const QUERYABLE: u8 = 0x04;
 
             pub const FORGET_RESOURCE: u8 = 0x11;
@@ -681,6 +684,7 @@ pub enum Declaration {
     Publisher(Publisher),
     ForgetPublisher(ForgetPublisher),
     Subscriber(Subscriber),
+    SharedSubscriber(SharedSubscriber), // Third Party Modifications
     ForgetSubscriber(ForgetSubscriber),
     Queryable(Queryable),
     ForgetQueryable(ForgetQueryable),
@@ -815,6 +819,43 @@ impl Header for Subscriber {
         header
     }
 }
+
+// ----------------------------Third Party Modifications--------------------------
+/// ```text
+///  7 6 5 4 3 2 1 0
+/// +-+-+-+-+-+-+-+-+
+/// |K|S|R|  S_SUB  |  R for Reliable
+/// +---------------+
+/// ~    ResKey     ~ if K==1 then resource key has name
+/// +---------------+
+/// |P|  SubMode    | if S==1. Otherwise: SubMode=Push
+/// +---------------+
+/// ~    Period     ~ if P==1. Otherwise: None
+/// +---------------+
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedSubscriber {
+    pub key: KeyExpr<'static>,
+    pub info: SubInfo,
+}
+
+impl Header for SharedSubscriber {
+    #[inline(always)]
+    fn header(&self) -> u8 {
+        let mut header = zmsg::declaration::id::SHARED_SUBSCRIBER;
+        if self.info.reliability == Reliability::Reliable {
+            header |= zmsg::flag::R;
+        }
+        if !(self.info.mode == SubMode::Push && self.info.period.is_none()) {
+            header |= zmsg::flag::S;
+        }
+        if self.key.has_suffix() {
+            header |= zmsg::flag::K;
+        }
+        header
+    }
+}
+// ----------------------------Third Party Modifications--------------------------
 
 /// ```text
 ///  7 6 5 4 3 2 1 0

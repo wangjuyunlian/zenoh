@@ -9,7 +9,7 @@
 // SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
 //
 // Contributors:
-//   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
+//   ADLINK zenoh team, <zenoh@adlink-labs.tech>
 //
 use super::runtime::Runtime;
 use petgraph::graph::NodeIndex;
